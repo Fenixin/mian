@@ -59,6 +59,9 @@ import struct
 import sys
 import warnings
 import zlib
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib import cm
+import numpy as np
 
 from blocks import BLOCK_TYPES, UNUSED_NAME
 
@@ -200,7 +203,7 @@ def plot(counts, block_type_hexes, title, log, interactive):
         plt.savefig(title + '.png')
 
 
-def mian(world_dir, block_type_hexes, nether, log, interactive):
+def mian(world_dir, block_type_hexes, nether, log, interactive, plot_mode):
     """
     Runs through the MCR files and gets the layer counts for the plot.
 
@@ -225,38 +228,117 @@ def mian(world_dir, block_type_hexes, nether, log, interactive):
 
     print "There are %s regions in the savegame directory" % len(mcr_files)
 
-    # Create total_counts list and write a list of 128 zeros on it for
-    # every scanned block.
-    total_counts = [[] for i in xrange(len(block_type_hexes))]
-    for block_type_index in range(len(block_type_hexes)):
-        for layer in range(128):
-            total_counts[block_type_index].append(int(0))
 
-    total_mcr_files = len(mcr_files)
-    file_counter = 1
+    if plot_mode == 'normal':
 
-    for mcr_file in mcr_files:
-
-        print "Reading %# 5u / %u" % (file_counter, total_mcr_files)
-
-        region_blocks = extract_region_blocks(mcr_file)
-        counts = count_blocks(region_blocks, block_type_hexes)
-
-        # Sum up the results
+        # Create total_counts list and write a list of 128 zeros on it for
+        # every scanned block.
+        total_counts = [[] for i in xrange(len(block_type_hexes))]
         for block_type_index in range(len(block_type_hexes)):
             for layer in range(128):
-                total_counts[block_type_index][layer] += \
-                    counts[block_type_index][layer]
+                total_counts[block_type_index].append(int(0))
 
-        file_counter += 1
+        total_mcr_files = len(mcr_files)
+        file_counter = 1
 
-    if total_counts == [[] for i in xrange(len(block_type_hexes))]:
-        raise Usage('No blocks were recognized.')
+        for mcr_file in mcr_files:
 
-    print "Done!"
+            print "Reading %# 5u / %u" % (file_counter, total_mcr_files)
 
-    plot(total_counts, block_type_hexes, title, log, interactive)
+            region_blocks = extract_region_blocks(mcr_file)
+            counts = count_blocks(region_blocks, block_type_hexes)
 
+            # Sum up the results
+            for block_type_index in range(len(block_type_hexes)):
+                for layer in range(128):
+                    total_counts[block_type_index][layer] += \
+                        counts[block_type_index][layer]
+
+            file_counter += 1
+
+        if total_counts == [[] for i in xrange(len(block_type_hexes))]:
+            raise Usage('No blocks were recognized.')
+
+        print "Done!"
+
+        plot(total_counts, block_type_hexes, title, log, interactive)
+
+
+    elif plot_mode == 'wireframe' or plot_mode == 'colormap':
+        
+        # Find the maximun and minimun region coordinates
+        min_x = 0
+        min_z = 0
+        max_x = 0
+        max_z = 0
+        
+        for mcr_file in mcr_files:
+            region_x, region_z = get_region_coords(mcr_file)
+            min_x = min(min_x, region_x)
+            min_z = min(min_z, region_z)
+            max_x = max(max_x, region_x)
+            max_z = max(max_z, region_z)
+
+        # Find the chunk coordinates of these region coordinates
+        min_chunk_x = min_x * 32
+        min_chunk_z = min_z * 32
+        max_chunk_x = max_x * 32 + 31
+        max_chunk_z = max_z * 32 + 31
+
+        # Generate a grid for the graph using numpy
+        X = np.arange(min_chunk_x, max_chunk_x + 1, 1)
+        Z = np.arange(min_chunk_z, max_chunk_z + 1, 1)
+        X, Z = np.meshgrid(X, Z)
+
+        # Generate data
+        Data = np.zeros((X.shape[0]-1,X.shape[1]-1))
+        
+        total_chunks = X.shape[0] * X.shape[1]
+        progress=1
+        print "Scanning chunks... "
+        
+        for index_x in xrange(abs(min_chunk_x) + abs(max_chunk_x)):
+            for index_z in xrange(abs(min_chunk_z) + abs(max_chunk_z)):
+                
+                # be careful with the index in the np.array!
+                counts = count_chunk_blocks(world_dir, (X[index_z][index_x],Z[index_z][index_x]), "\x32")
+                if counts < 0:
+                    Data[index_z][index_x] = -10 # To properly show zones without chunks
+                    
+                else:
+                    Data[index_z][index_x] = counts 
+                    
+                progress += 1
+                if progress % 1000 == 0:
+                    print int(float(progress) / total_chunks *100), "%"
+                    
+        print "100%... Done!"
+        
+        if plot_mode == 'colormap':
+            
+            Data = np.rot90(Data,3) # north on the top of the image
+            im = plt.imshow(Data, cmap=cm.jet, extent=(max_chunk_z, min_chunk_z, max_chunk_x, min_chunk_x))
+            im.set_interpolation('nearest') # pixels in the image are chunks, better than bilinear, etc.
+            plt.colorbar()
+            #im.set_interpolation('bicubic')
+            #im.set_interpolation('bilinear')
+            plt.ylabel('X axis, negative to North')
+            plt.xlabel('Z axis, negative to East')
+            plt.title(title + '(north on top of image)')
+            
+            
+        elif plot_mode == 'wireframe':
+            fig = plt.figure()
+            ax = Axes3D(fig)
+            ax.plot_wireframe(X, Z, Data, rstride=1, cstride=1)
+            plt.xlabel('X axis, negative to North')
+            plt.ylabel('Z axis, negative to East')
+            plt.title(title + '(north on top of image)')
+
+        if interactive:
+            plt.show()
+        else:
+            plt.savefig(title + '.png')
 
 def get_region_coords(mcr_file):
     """ Takes the name of a file with or without the full path and
@@ -435,13 +517,14 @@ def main(argv=None):
     nether = False
     interactive = True
     log = False
+    plot_mode = 'normal'
 
     try:
         try:
             opts, args = getopt(
                 argv[1:],
-                'b:lnhs',
-                ['blocks=', 'list', 'nether', 'log', 'save', 'help'])
+                'b:lnhsm:',
+                ['blocks=', 'list', 'nether', 'log', 'save', 'help', 'mode='])
         except GetoptError, err:
             raise Usage(str(err))
 
@@ -454,6 +537,8 @@ def main(argv=None):
                 log = True
             elif option in ('-s', '--save'):
                 interactive = False
+            elif option in ('-m', '--mode'):
+                plot_mode = value
             elif option in ('-l', '--list'):
                 print_block_types()
                 return 0
@@ -479,7 +564,7 @@ def main(argv=None):
                 if found_hex not in block_type_hexes:  # Avoid duplicates
                     block_type_hexes.append(found_hex)
 
-        mian(world_dir, block_type_hexes, nether, log, interactive)
+        mian(world_dir, block_type_hexes, nether, log, interactive, plot_mode)
 
     except Usage, err:
         sys.stderr.write(err.msg + '\n')
