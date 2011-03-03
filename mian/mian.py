@@ -258,6 +258,84 @@ def mian(world_dir, block_type_hexes, nether, log, interactive):
     plot(total_counts, block_type_hexes, title, log, interactive)
 
 
+def get_region_coords(mcr_file):
+    """ Takes the name of a file with or without the full path and
+    returns 2 integers with the coordinates of a region file """
+    
+    regionXZ = basename(mcr_file).lstrip('r.').split('.',2)[:2]
+    return int(regionXZ[0]),int(regionXZ[1])
+
+
+def count_chunk_blocks(world_dir,chunkXZ, block_type):
+    """ Takes the global chunk coordinates, the world_dir 
+    and the block type for count.
+    
+    Returns the count of block or -1 if the chunk, or the 
+    region file doesn't exist.
+    """
+
+    # Determine the propper region file.
+    regionXZ = (chunkXZ[0] / 32, chunkXZ[1] / 32)
+    mcr_file = world_dir.rstrip('/') + "/region/r." + str(regionXZ[0]) + "." + str(regionXZ[1]) + ".mcr"
+
+    # Determine chunk coords in region file.
+    local_chunkXZ = (divmod(chunkXZ[0],32)[1], + divmod(chunkXZ[1],32)[1])
+
+    blocks = extract_region_chunk_blocks(mcr_file, local_chunkXZ)
+
+    if blocks == None:
+        return -1
+
+    count = blocks.count(block_type)
+
+    return count
+
+
+def extract_region_chunk_blocks(mcr_file, coordsXZ):
+    """ Takes a region file and a local chunk coordinates 
+    and returns the blocks as a string.
+    
+    Returns None if the chunk is not in the region file,
+    or if the region file doesn't exist.
+    """
+    
+    def location(coordsXZ):
+        return 4 * ((coordsXZ[0] % 32) + (coordsXZ[1] % 32) * 32)
+
+    try:
+        file_pointer = open(mcr_file, 'rb')
+    except IOError:
+        return None
+
+    file_pointer.seek(location(coordsXZ))
+
+    # Locate sector
+    location_raw = file_pointer.read(LOCATION_BYTES)
+    location = struct.unpack(
+        LOCATION_FORMAT,
+        LOCATION_PADDING + location_raw)[0]
+    if location == 0:
+        return None
+
+    # Get chunk and decompress
+    file_pointer.seek(location * SECTOR_BYTES)
+    chunk_length = struct.unpack(
+        UNSIGNED_LONG_FORMAT,
+        file_pointer.read(CHUNK_LENGTH_BYTES))[0]
+    chunk_compression = struct.unpack(
+        UNSIGNED_CHAR_FORMAT,
+        file_pointer.read(COMPRESSION_BYTES))[0]
+    chunk_raw = file_pointer.read(chunk_length)
+    chunk = decompress(chunk_raw, chunk_compression)
+
+    # Extract the blocks of the chunk
+    index = chunk.find(BLOCKS_NBT_TAG)
+    blocks = chunk[
+        (index + len(BLOCKS_NBT_TAG)):(index + len(BLOCKS_NBT_TAG) + 32768)]
+
+    return blocks
+
+
 def count_blocks(region_blocks, block_type_hexes):
     """ This function counts blocks per layer.
 
